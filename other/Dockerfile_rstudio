@@ -1,20 +1,36 @@
-# Start with updated CAI Runtime
+# Start with the CAI R 4.5 PBJ runtime (R is ALREADY installed in this base,
+# so we do NOT reinstall R - we only add RStudio Server + sparklyr).
 FROM docker.repository.cloudera.com/cloudera/cdsw/ml-runtime-pbj-workbench-r4.5-standard:2026.01.1-b6
 
 USER root
 
-# Update system packages
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+# curl for the download.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------
-# Install Newer RStudio Server
-# (Updated version)
+# Install RStudio Server
 # -----------------------------
-RUN curl -L https://download2.rstudio.org/server/jammy/amd64/rstudio-server-latest-amd64.deb -o rstudio-server.deb && \
-    dpkg -i rstudio-server.deb || apt-get update && apt-get install -f -y && \
-    rm rstudio-server.deb
+# NO "latest" build exists on download2. Pass a real version at build time:
+#   docker build --build-arg RSTUDIO_VERSION=<current> ...
+# Find the current filename at https://posit.co/download/rstudio-server/
+# (the part between "rstudio-server-" and "-amd64.deb"). The default below is a
+# placeholder and is NOT guaranteed to exist - override it.
+ARG RSTUDIO_VERSION=2026.04.0-526
+
+# set -e => the step fails if download/install fails (no more silent success).
+# curl -f => fail on HTTP error instead of saving an error page.
+# apt install ./file.deb => installs the .deb AND its dependencies.
+# test -x => hard guard: build stops HERE if the binary is missing.
+RUN set -eux; \
+    curl -fL "https://download2.rstudio.org/server/jammy/amd64/rstudio-server-${RSTUDIO_VERSION}-amd64.deb" \
+        -o /tmp/rstudio-server.deb; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/rstudio-server.deb; \
+    rm -f /tmp/rstudio-server.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    test -x /usr/sbin/rstudio-server
 
 # -----------------------------
 # Install sparklyr (no Spark bundled)
@@ -24,33 +40,46 @@ RUN R -e "install.packages('sparklyr', repos='https://cloud.r-project.org', depe
 # -----------------------------
 # Configure RStudio for CML
 # -----------------------------
-#RUN chown -R cdsw:cdsw /var/lib/rstudio-server && chmod -R 777 /var/lib/rstudio-server
-
+RUN chown -R cdsw:cdsw /var/lib/rstudio-server && chmod -R 777 /var/lib/rstudio-server
+# cdsw must read /etc/rstudio/database.conf and write pid/log files under /var/run.
+RUN mkdir -p /var/run/rstudio-server /var/log/rstudio/rstudio-server \
+ && usermod -aG rstudio-server cdsw 2>/dev/null || true \
+ && chown -R cdsw:cdsw /var/run/rstudio-server /var/log/rstudio /etc/rstudio \
+ && chmod -R 777 /var/run/rstudio-server /var/log/rstudio \
+ && chmod 644 /etc/rstudio/database.conf
 COPY rserver.conf /etc/rstudio/rserver.conf
-COPY rstudio-cml /usr/local/bin/rstudio-cml
-RUN chmod +x /usr/local/bin/rstudio-cml
+COPY rstudio-cml  /usr/local/bin/rstudio-cml
+# Strip CR chars in case files were edited on Windows (CRLF => bad interpreter).
+RUN sed -i 's/\r$//' /usr/local/bin/rstudio-cml /etc/rstudio/rserver.conf \
+ && chmod +x /usr/local/bin/rstudio-cml
 
-# Symlink for CML editor launcher
-RUN ln -s /usr/local/bin/rstudio-cml /usr/local/bin/ml-runtime-editor
+# CML launches whatever ml-runtime-editor points to.
+RUN ln -sf /usr/local/bin/rstudio-cml /usr/local/bin/ml-runtime-editor
 
-# Ensure R library path
-RUN export PATH=$PATH:/home/cdsw/R/x86_64-pc-linux-gnu-library/4.1
+# (Removed the original `RUN export PATH=.../4.1` line: a RUN-scoped export does
+#  nothing at runtime and 4.1 did not match this image.)
 
 # -----------------------------
 # Permissions (CML requirements)
 # -----------------------------
 RUN for i in /etc /var /etc/alternatives /var/lib/dpkg/ /home /runtime-addons; do \
- if [ -d ${i} ]; then chmod 777 ${i}; fi; \
- done
+      if [ -d ${i} ]; then chmod 777 ${i}; fi; \
+    done
 
 RUN chown cdsw /
 
+# Spark/Hadoop runtime add-ons symlink into /usr/lib/* at session start. Those
+# paths must not already exist, and cdsw must be able to create symlinks there.
+RUN rm -rf /usr/lib/hadoop /usr/lib/spark 2>/dev/null || true
+
+RUN chmod u+w /usr/lib /usr/bin
+
 RUN for i in /bin /var /etc /opt /var/lib/dpkg/ /sbin /usr /home /runtime-addons; do \
- if [ -d ${i} ]; then \
-   chown cdsw ${i}; \
-   find ${i} -type d -exec chown cdsw {} +; \
- fi; \
- done
+      if [ -d ${i} ]; then \
+        chown cdsw ${i}; \
+        find ${i} -type d -exec chown cdsw {} +; \
+      fi; \
+    done
 
 # -----------------------------
 # Runtime Metadata
@@ -58,9 +87,9 @@ RUN for i in /bin /var /etc /opt /var/lib/dpkg/ /sbin /usr /home /runtime-addons
 ENV ML_RUNTIME_EDITOR="RStudio" \
     ML_RUNTIME_EDITION="RStudio 2026 Community Runtime" \
     ML_RUNTIME_SHORT_VERSION="2026.03" \
-    ML_RUNTIME_MAINTENANCE_VERSION="0" \
-    ML_RUNTIME_FULL_VERSION="2026.03.0" \
-    ML_RUNTIME_DESCRIPTION="RStudio Server 2026.03 with sparklyr on PBJ Workbench 2026.01 runtime" \
+    ML_RUNTIME_MAINTENANCE_VERSION="3" \
+    ML_RUNTIME_FULL_VERSION="2026.03.3" \
+    ML_RUNTIME_DESCRIPTION="RStudio Server with sparklyr on PBJ Workbench R4.5 runtime" \
     ML_RUNTIME_KERNEL="R 4.5"
 
 LABEL com.cloudera.ml.runtime.editor=$ML_RUNTIME_EDITOR \
@@ -71,5 +100,4 @@ LABEL com.cloudera.ml.runtime.editor=$ML_RUNTIME_EDITOR \
       com.cloudera.ml.runtime.description=$ML_RUNTIME_DESCRIPTION \
       com.cloudera.ml.runtime.kernel=$ML_RUNTIME_KERNEL
 
-# Default user back to cdsw
 USER cdsw

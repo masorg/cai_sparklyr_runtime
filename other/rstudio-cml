@@ -42,22 +42,84 @@
 #
 ############################################################################
 
-# This saves RStudio's user runtime information to /tmp, which ensures several
-# RStudio sessions can run in the same project simultaneously
+# RStudio launcher for Cloudera AI (CML).
+# Fix: derive R_HOME instead of hard-coding /etc/R (which does not exist on the
+# Cloudera R base image, where R lives under /usr/local/lib/R).
+
+set -u
+
+# Per-user RStudio state in /tmp so multiple sessions can run per project.
 mkdir -p /tmp/rstudio/sessions/active
 mkdir -p /home/cdsw/.rstudio/sessions
-if [ -d /home/cdsw/.rstudio/sessions/active ]; then rm -rf /home/cdsw/.rstudio/sessions/active; fi
+if [ -d /home/cdsw/.rstudio/sessions/active ]; then
+  rm -rf /home/cdsw/.rstudio/sessions/active
+fi
 ln -s /tmp/rstudio/sessions/active /home/cdsw/.rstudio/sessions/active
 
-# This ensures RStudio picks up the environment. This may not be necessary if
-# you are installing RStudio Professional. See
-# https://docs.rstudio.com/ide/server-pro/r-sessions.html#customizing-session-launches.
-# SPARK_DIST_CLASSPATH is treated as a special case to workaround a bug in R
-# with very long environment variables.
-env | grep -v ^LD_LIBRARY_PATH >> /usr/local/lib/R/etc/Renviron.site
-#echo "Sys.setenv(\"SPARK_DIST_CLASSPATH\"=\"${SPARK_DIST_CLASSPATH}\")" >> /usr/local/lib/R/etc/Rprofile.site
+# Resolve where R actually lives (apt build: /usr/lib/R; source/Cloudera build:
+# /usr/local/lib/R). Deriving it avoids the hard-coded /etc/R bug.
+R_HOME="$(R RHOME 2>/dev/null)"
+if [ -z "${R_HOME}" ]; then
+  R_HOME="/usr/lib/R"
+fi
 
-echo "R_LIBS_USER=/home/cdsw/.local/lib/R/4.0/library" >> /etc/R/Renviron.site
+# Push the CML environment into R's site env file (excluding LD_LIBRARY_PATH).
+mkdir -p "${R_HOME}/etc"
+env | grep -v '^LD_LIBRARY_PATH' >> "${R_HOME}/etc/Renviron.site"
 
-# Now start RStudio
-/usr/sbin/rstudio-server start --server-user cdsw
+# Point the user library at the installed R major.minor (e.g. 4.5).
+RVER="$(Rscript -e 'cat(paste(R.version$major, sub("\\..*","",R.version$minor), sep="."))' 2>/dev/null)"
+if [ -n "${RVER}" ]; then
+  echo "R_LIBS_USER=/home/cdsw/.local/lib/R/${RVER}/library" >> "${R_HOME}/etc/Renviron.site"
+fi
+
+# Ensure RStudio paths are writable at runtime (engine init can reset /var/run).
+mkdir -p /var/run/rstudio-server /var/log/rstudio/rstudio-server
+chmod -R 777 /var/run/rstudio-server /var/log/rstudio 2>/dev/null || true
+if [ -f /etc/rstudio/database.conf ]; then
+  chmod 644 /etc/rstudio/database.conf 2>/dev/null || true
+fi
+
+# Bind to the port CAI expects (default 8090). Update config at runtime so we
+# match CDSW_APP_PORT even if the platform overrides it.
+APP_PORT="${CDSW_APP_PORT:-8090}"
+if [ -f /etc/rstudio/rserver.conf ]; then
+  sed -i "s/^www-port=.*/www-port=${APP_PORT}/" /etc/rstudio/rserver.conf
+fi
+
+if ! /usr/sbin/rstudio-server verify-installation >&2; then
+  echo "ERROR: RStudio verify-installation failed" >&2
+  exit 1
+fi
+
+echo "Starting RStudio on 127.0.0.1:${APP_PORT}..." >&2
+if ! /usr/sbin/rstudio-server start --server-user=cdsw >&2; then
+  echo "ERROR: rstudio-server start failed" >&2
+  tail -30 /var/log/rstudio/rstudio-server/*.log 2>&1 >&2 || true
+  exit 1
+fi
+
+# `start` often returns while rserver keeps running in the background. CAI
+# exits when this script ends, so wait for the server process.
+RSERVER_PID=""
+for _ in $(seq 1 30); do
+  RSERVER_PID="$(pgrep -f '/usr/lib/rstudio-server/bin/rserver' | head -1 || true)"
+  if [ -n "${RSERVER_PID}" ]; then
+    break
+  fi
+  sleep 1
+done
+
+if [ -z "${RSERVER_PID}" ]; then
+  echo "ERROR: rserver not running after start" >&2
+  tail -30 /var/log/rstudio/rstudio-server/*.log 2>&1 >&2 || true
+  exit 1
+fi
+
+echo "RStudio running (pid ${RSERVER_PID})" >&2
+while kill -0 "${RSERVER_PID}" 2>/dev/null; do
+  sleep 10
+done
+
+echo "ERROR: RStudio exited unexpectedly" >&2
+exit 1
