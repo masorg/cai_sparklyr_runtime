@@ -49,6 +49,8 @@ The [`other/Dockerfile_rstudio`](other/Dockerfile_rstudio) adds RStudio Server a
 
 Build context: `other/` (see build commands below).
 
+**Do not build RStudio from the repository root.** Run the commands below from the repo root, but always pass `-f other/Dockerfile_rstudio` and use `other` as the build context (the last argument to `docker build`). Building with `docker build .` at the repo root produces the Workbench image only.
+
 **Important:** Pin a real RStudio Server version at build time. There is no `latest` package on Posit's download site. Check [Posit RStudio Server downloads](https://posit.co/download/rstudio-server/) for the current Ubuntu 22 / amd64 `.deb` filename.
 
 The CAI engineering team maintains official base runtimes in [cloudera/ml-runtimes](https://github.com/cloudera/ml-runtimes).
