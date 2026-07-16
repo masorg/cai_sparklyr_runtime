@@ -2,199 +2,202 @@
 
 ## Objective
 
-This demo shows how to create a custom Sparkly R runtime extending the Cloudera AI R 4.5 PBJ Runtime, push it to a private AWS ECR repository, and then import it into the CAI Runtime Catalog.
+This repository shows how to build custom Sparkly R runtimes on top of the Cloudera AI R 4.5 PBJ Workbench base image, publish them to a container registry, and import them into the CAI Runtime Catalog.
 
-The demo is divided in five parts:
+Two examples are provided:
 
-1. [Create Dockerfile](https://github.com/pdefusco/cai_sparklyr_runtime?tab=readme-ov-file#1-create-dockerfile)
-2. [Build and push image to AWS ECR](https://github.com/pdefusco/cai_sparklyr_runtime?tab=readme-ov-file#2-build-and-push-image-to-aws-ecr)
-3. [Create Docker Credentials in CAI Workbench](https://github.com/pdefusco/cai_sparklyr_runtime?tab=readme-ov-file#3-create-docker-credentials-in-cloudera-ai-workbench)
-4. [Import Runtime in the Catalog](https://github.com/pdefusco/cai_sparklyr_runtime?tab=readme-ov-file#4-import-runtime-in-the-catalog-and-run-test-session)
-5. [Run a Test Session](https://github.com/pdefusco/cai_sparklyr_runtime?tab=readme-ov-file#5-run-test-session)
+| Path | Editor in CAI | Use when |
+|------|---------------|----------|
+| [`Dockerfile`](Dockerfile) | **Workbench** | Extend the default PBJ Workbench with sparklyr only |
+| [`other/Dockerfile_rstudio`](other/Dockerfile_rstudio) | **RStudio** | Add RStudio Server + sparklyr as a third-party editor |
 
-This demo can be used as general reference for CAI admins and users who want to create custom R runtimes from a private ECR repository.
+Both follow the same high-level flow:
+
+1. [Choose a Dockerfile](#1-choose-a-dockerfile)
+2. [Build and push the image](#2-build-and-push-the-image)
+3. [Add registry credentials in CAI (private registries only)](#3-add-registry-credentials-in-cai-private-registries-only)
+4. [Import the runtime in the catalog](#4-import-the-runtime-in-the-catalog)
+5. [Run a test session](#5-run-a-test-session)
+
+This demo is intended as a general reference for CAI admins and users building custom R runtimes on-premises or in the cloud.
 
 ## Requirements
 
-In order to set up this demo you need the following:
+* A CAI Workbench on Cloudera Public Cloud Runtime 7.3.1 or above (or equivalent on-prem CAI).
+* Docker installed locally (or a CI build host with access to your registry).
+* Access to `docker.repository.cloudera.com` for the base runtime image (or a saved copy loaded locally).
+* A container registry reachable from your CAI environment (AWS ECR, ECR Public, or another registry).
 
-* A CAI Workbench in Cloudera Public Cloud Runtime 7.3.1 or above in AWS.
-* An AWS account user and credentils.
-* A local Docker setup.
+On Apple Silicon / arm64 Macs, build with `--platform linux/amd64` — CAI runtimes run on amd64.
 
-## End to End Demo
+---
 
-### 1. Create Dockerfile
+## 1. Choose a Dockerfile
 
-In your local environment, create a new Dockerfile (if you cloned this github, an example has already been provided). Familiarize yourself with the code.
+### Option A — Workbench + sparklyr (minimal)
 
-```
-# Base Cloudera AI Runtime
-FROM docker.repository.cloudera.com/cloudera/cdsw/ml-runtime-pbj-workbench-r4.5-standard:2026.01.1-b6
+The root [`Dockerfile`](Dockerfile) installs sparklyr on the standard PBJ Workbench R 4.5 runtime and sets runtime metadata for the **Workbench** editor.
 
-# Switch to root to install R packages if needed
-USER root
+Build context: repository root (`.`).
 
-# Install sparklyr without pulling Spark dependencies
-# (sparklyr itself does not install Spark unless explicitly requested via spark_install())
-RUN R -e "install.packages('sparklyr', repos='https://cloud.r-project.org', dependencies=TRUE)"
+### Option B — RStudio + sparklyr
 
-# Override Runtime label and environment variables metadata
-ENV ML_RUNTIME_EDITOR="Workbench" \
-    ML_RUNTIME_EDITION="Community" \
-    ML_RUNTIME_SHORT_VERSION="2026.03" \
-    ML_RUNTIME_MAINTENANCE_VERSION="2" \
-    ML_RUNTIME_FULL_VERSION="2026.03.2" \
-    ML_RUNTIME_DESCRIPTION="Runtime for Nikhil"
+The [`other/Dockerfile_rstudio`](other/Dockerfile_rstudio) adds RStudio Server and sparklyr on the same base image and sets metadata for the **RStudio** editor. Supporting files live in `other/`:
 
-LABEL com.cloudera.ml.runtime.editor=$ML_RUNTIME_EDITOR \
-      com.cloudera.ml.runtime.edition=$ML_RUNTIME_EDITION \
-      com.cloudera.ml.runtime.full-version=$ML_RUNTIME_FULL_VERSION \
-      com.cloudera.ml.runtime.short-version=$ML_RUNTIME_SHORT_VERSION \
-      com.cloudera.ml.runtime.maintenance-version=$ML_RUNTIME_MAINTENANCE_VERSION \
-      com.cloudera.ml.runtime.description=$ML_RUNTIME_DESCRIPTION
-```
+* `other/rstudio-cml` — launcher symlinked to `/usr/local/bin/ml-runtime-editor`
+* `other/rserver.conf` — RStudio config (`www-port=8090` must match `CDSW_APP_PORT`)
 
-Notice the base CAI runtime "ml-runtime-pbj-workbench-r4.5-standard:2026.01.1-b6" is extended.
+Build context: `other/` (see build commands below).
 
-The CAI engineering team periodically tests, maintains and publishes this and other runtimes in [this GitHub repository](https://github.com/cloudera/ml-runtimes).
+**Important:** Pin a real RStudio Server version at build time. There is no `latest` package on Posit's download site. Check [Posit RStudio Server downloads](https://posit.co/download/rstudio-server/) for the current Ubuntu 22 / amd64 `.deb` filename.
 
-In this example, the "sparklyr" package is installed in the runtime so users who launch sessions, jobs, and other workloads in CAI don't have to.
+The CAI engineering team maintains official base runtimes in [cloudera/ml-runtimes](https://github.com/cloudera/ml-runtimes).
 
-You can customize this Dockerfile to include more packages. And, as shown in "sparklyrtest.R", you can still install other packages on top of the ones provided in the runtime. When you do this, package dependencies are saved in the project files so there is no need to reinstall in the future.
+Runtime metadata (`ML_RUNTIME_*` env vars and Docker labels) is mandatory and must uniquely identify each build. See [Cloudera runtime metadata documentation](https://docs.cloudera.com/machine-learning/cloud/runtimes/topics/ml-metadata-for-custom-runtimes.html).
 
-Notice Runtime Metadata is mandatory and must uniquely identify each build. For a more detailed explanation of the metadata fields, please visit [this page](https://docs.cloudera.com/machine-learning/cloud/runtimes/topics/ml-metadata-for-custom-runtimes.html) in the documentation.
+Bump `ML_RUNTIME_MAINTENANCE_VERSION` and `ML_RUNTIME_FULL_VERSION` (and your image tag) for each new build you import into the catalog.
 
-### 2. Build and Push Image to AWS ECR
+---
 
-Using the AWS CLI, run the following commands from your terminal.
+## 2. Build and push the image
 
-```
-% aws ecr create-repository \
-  --repository-name cai-sparklyr-rm \
-  --region us-west-2
-  {
-      "repository": {
-          "repositoryArn": "arn:aws:ecr:us-west-2:123456789:repository/cai-sparklyr-rm",
-          "registryId": "123456789",
-          "repositoryName": "cai-sparklyr-rm",
-          "repositoryUri": "123456789.dkr.ecr.us-west-2.amazonaws.com/cai-sparklyr-rm",
-          "createdAt": "2026-03-31T15:24:46.408000-07:00",
-          "imageTagMutability": "MUTABLE",
-          "imageScanningConfiguration": {
-              "scanOnPush": false
-          },
-          "encryptionConfiguration": {
-              "encryptionType": "AES256"
-          }
-      }
-  }
+Replace placeholders below with your account ID, region, and repository name.
+
+### Workbench runtime
+
+```bash
+export AWS_REGION=us-west-2
+export AWS_ACCOUNT_ID=123456789012
+export ECR_REPO=cai-sparklyr-rm
+export IMAGE_TAG=2026.03.2
+
+# Create repository (skip if it already exists)
+aws ecr create-repository --repository-name $ECR_REPO --region $AWS_REGION
+
+# Authenticate and push
+aws ecr get-login-password --region $AWS_REGION | \
+  docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+docker build --platform linux/amd64 -t $ECR_REPO:$IMAGE_TAG .
+
+docker tag $ECR_REPO:$IMAGE_TAG \
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
 ```
 
-```
-aws ecr get-login-password --region us-west-2 | \
-  docker login --username AWS --password-stdin 123456789.dkr.ecr.us-west-2.amazonaws.com/cai-sparklyr-rm
-```
+### RStudio runtime
 
-```
-docker build -t cai-sparklyr-rm:latest .
-```
+```bash
+export RSTUDIO_VERSION=2026.04.0-526   # verify at posit.co/download/rstudio-server/
+export AWS_REGION=us-west-2
+export AWS_ACCOUNT_ID=123456789012
+export ECR_REPO=cai-rstudio-sparklyr
+export IMAGE_TAG=2026.03.3
 
-```
-docker tag cai-sparklyr-rm:latest \
-  123456789.dkr.ecr.us-west-2.amazonaws.com/cai-sparklyr-rm:latest  
-```
+# Optional: confirm the .deb exists before building (~150 MB, not a few hundred bytes)
+curl -fIL "https://download2.rstudio.org/server/jammy/amd64/rstudio-server-${RSTUDIO_VERSION}-amd64.deb"
 
-```
-docker push \
-  123456789.dkr.ecr.us-west-2.amazonaws.com/cai-sparklyr-rm
-```
+aws ecr get-login-password --region $AWS_REGION | \
+  docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-```
-aws ecr describe-images \
-  --repository-name cai-sparklyr-rm \
-  --region us-west-2
-```
+docker build --platform linux/amd64 \
+  --build-arg RSTUDIO_VERSION=$RSTUDIO_VERSION \
+  -t $ECR_REPO:$IMAGE_TAG \
+  -f other/Dockerfile_rstudio other
 
-Optionally validate the repository and image in the AWS ECR UI.
+docker tag $ECR_REPO:$IMAGE_TAG \
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
 
-![alt text](img/ecr-1.png)
-
-### 3. Create Docker Credentials in Cloudera AI Workbench
-
-Navigate to "Site Administration" -> "Runtimes" -> "Docker Credentials" and create a new credential and set the following fields:
-
-```
-Name: sparklyr-rm-credentials
-Server: the full image URI as shown when the repository is created e.g. "123456789.dkr.ecr.us-west-2.amazonaws.com/cai-sparklyr-rm:latest/" - this value is also available in the ECR UI.
-Username: AWS
-Password: your AWS token. This can be obtained with: "aws ecr get-login-password --region us-west-2"
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
 ```
 
-![alt text](img/creds-1.png)
+### Public registry alternative
 
-### 4. Import Runtime in the Catalog and Run Test Session
+If you use a **public** registry (for example AWS ECR Public), you can skip Docker credentials in CAI for import. Authenticate with `aws ecr-public get-login-password --region us-east-1` and push to your public URI, then import the full image path including the tag into the Runtime Catalog.
 
-In the Runtime Catalog, select the "Add Runtime" icon.
+---
 
-![alt text](img/import-runtime-1.png)
+## 3. Add registry credentials in CAI (private registries only)
 
-Apply the previously configured credentials and input the entire URI path in the "Registry of Docker Image to Upload" field.
+For **private** registries (standard AWS ECR, on-prem registries, etc.):
 
-![alt text](img/import-runtime-2.png)
+**Site Administration → Runtimes → Docker Credentials → Add**
 
-The image will now become available in the Runtime Catalog UI
+| Field | Example |
+|-------|---------|
+| Name | `sparklyr-runtime-credentials` |
+| Server | `123456789012.dkr.ecr.us-west-2.amazonaws.com/my-repo/` |
+| Username | `AWS` (for ECR) or per your registry |
+| Password | `aws ecr get-login-password --region us-west-2` (ECR tokens expire; refresh when re-importing) |
 
-![alt text](img/import-runtime-3.png)
+Public images do not require this step.
 
-### 5. Run Test Session
+---
 
-Clone this GitHub repository as a new CAI project and add the new runtime.
+## 4. Import the runtime in the catalog
 
-![alt text](img/project-runtimes-1.png)
+**Site Administration → Runtimes → Runtime Catalog → Add Runtime**
 
-Create a test session and run the code. Notice the URI is now showing as the Runtime ID in the Session UI.
+* Select your registry credentials (private registries only).
+* Enter the full image URI including tag, for example:
+  * `123456789012.dkr.ecr.us-west-2.amazonaws.com/cai-sparklyr-rm:2026.03.2`
+  * `123456789012.dkr.ecr.us-west-2.amazonaws.com/cai-rstudio-sparklyr:2026.03.3`
+* Click **Validate**, then **Add to Catalog**.
+
+Validation checks Docker labels. For the RStudio image, expect **Editor: RStudio** and **Kernel: R 4.5**.
+
+Enable the runtime in your project under **Project Settings → Runtimes**.
+
+---
+
+## 5. Run a test session
+
+Clone this repository as a CAI project and enable your imported runtime.
+
+### Workbench session
 
 ```
-Name: Sparklyr Test Session
-Editor: Workbench
-Kernel: R 4.5
-Edition: Community
-Version: 2026.03
-Enable Spark: version 3.5
-Enable GPU: none
-Resource Profile: 2 vCPU / 4 GiB Memory
+Editor:     Workbench
+Kernel:     R 4.5
+Spark:      enabled (optional, for sparklyr against a cluster)
+Resources:  2 vCPU / 4 GiB Memory (or your profile)
 ```
 
-![alt text](img/session-1.png)
+Run [`sparklyrtest.R`](sparklyrtest.R) and adjust cluster/storage paths for your environment.
 
-Next, run "sparklyrtest.R" and validate output.
+### RStudio session
 
-![alt text](img/session-2.png)
+```
+Editor:     RStudio
+Kernel:     R 4.5
+Spark:      off for first test; enable for sparklyr + Hadoop CLI add-on test
+Resources:  2 vCPU / 4 GiB Memory (or your profile)
+```
 
-![alt text](img/session-3.png)
+The session should stay **Running** (not exit after a few seconds). RStudio loads in the session UI when the editor launcher stays active.
 
-## Summary and Next Steps
+In the R console:
 
-**Cloudera AI Runtimes** provide a structured way to package and manage reproducible environments for data science and machine learning workloads, enabling teams to define lightweight, customizable containers with specific editors, languages, and dependency stacks.
+```r
+R.version.string
+"sparklyr" %in% rownames(installed.packages())
+```
 
-Runtimes are registered and managed in the Runtime Catalog, which lists all available standard and custom environments for interactive sessions or production workloads, and can be imported from AWS ECR and other image registries.
+Then run `sparklyrtest.R` with Spark enabled if desired.
 
-Administrators and data scientists can create and import new runtimes in the catalog by adding custom images and credentials, enabling secure access to registries like AWS ECR and on‑prem registries, and ensuring that the right tools and packages are available where and when teams need them. ([Cloudera Documentation][1])
+---
 
-### Cloudera AI Runtime Documentation & Blogs
+## Summary
 
-* **Runtime Catalog documentation** – Official guide to viewing and managing the Runtime Catalog in Cloudera AI. ([Cloudera Documentation][1])
-  *[https://docs.cloudera.com/machine-learning/1.5.5/runtimes/topics/ml-using-runtime-catalog.html](https://docs.cloudera.com/machine-learning/1.5.5/runtimes/topics/ml-using-runtime-catalog.html)*
+**Cloudera AI Runtimes** package reproducible environments for sessions, jobs, and models. Custom images extend official base runtimes with additional packages and editors; the Runtime Catalog registers them for use across projects.
 
-* **Adding new ML Runtimes** – How to register custom ML Runtimes and add Docker registry credentials. ([Cloudera Documentation][2])
-  *[https://docs.cloudera.com/machine-learning/cloud/managing-runtimes/topics/ml-adding-new-ml-runtimes.html](https://docs.cloudera.com/machine-learning/cloud/managing-runtimes/topics/ml-adding-new-ml-runtimes.html)*
+Administrators import images from ECR or other registries, configure credentials for private registries, and assign runtimes to projects. Users select the runtime and editor when starting a session.
 
-* **Adding Docker registry credentials in CAI** – Instructions for adding Docker registry credentials (e.g., ECR) for pulling images. ([Cloudera Documentation][3])
-  *[https://docs.cloudera.com/machine-learning/1.5.5/managing-runtimes/topics/ml-add-docker-registry-credentials-runtimes.html](https://docs.cloudera.com/machine-learning/1.5.5/managing-runtimes/topics/ml-add-docker-registry-credentials-runtimes.html)*
+### Cloudera AI Runtime documentation
 
-* **ML Runtimes overview and customization** – Full docs on ML Runtimes, editors, kernels, add‑ons, and custom images. ([Cloudera Documentation][4])
-  *[https://docs.cloudera.com/machine-learning/cloud/runtimes/index.html](https://docs.cloudera.com/machine-learning/cloud/runtimes/index.html)*
-
-* **Cloudera Blog: Building Custom Runtimes with Editors** – Example of customizing and using different editors in ML Runtimes. ([blog.cloudera.com][5])
-  *[https://blog.cloudera.com/building-custom-runtimes-with-editors-in-cloudera-machine-learning/](https://blog.cloudera.com/building-custom-runtimes-with-editors-in-cloudera-machine-learning/)*
+* [Runtime Catalog](https://docs.cloudera.com/machine-learning/1.5.5/runtimes/topics/ml-using-runtime-catalog.html)
+* [Adding new ML Runtimes](https://docs.cloudera.com/machine-learning/cloud/managing-runtimes/topics/ml-adding-new-ml-runtimes.html)
+* [Docker registry credentials](https://docs.cloudera.com/machine-learning/1.5.5/managing-runtimes/topics/ml-add-docker-registry-credentials-runtimes.html)
+* [ML Runtimes overview](https://docs.cloudera.com/machine-learning/cloud/runtimes/index.html)
+* [Custom runtimes with editors (blog)](https://blog.cloudera.com/building-custom-runtimes-with-editors-in-cloudera-machine-learning/)
