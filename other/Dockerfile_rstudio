@@ -35,12 +35,15 @@ RUN set -eux; \
 # -----------------------------
 # Install sparklyr (no Spark bundled)
 # -----------------------------
-# install.packages() exits 0 even when a package fails to build, so a failed
-# sparklyr install would silently ship an image missing sparklyr that only errors
-# at session time. The trailing requireNamespace check makes the build hard-fail
-# instead. NOTE: build on native amd64 (DevCloud / Secure Container Factory); the
-# tidyverse/sparklyr source compile is unreliable under qemu amd64-on-arm.
-RUN R -e "install.packages('sparklyr', repos='https://cloud.r-project.org', dependencies=TRUE); ok <- requireNamespace('sparklyr', quietly=TRUE); quit(status=if (isTRUE(ok)) 0 else 1)"
+# Install sparklyr from Posit Package Manager as PREBUILT BINARIES for Ubuntu
+# 24.04 (noble). The HTTPUserAgent line is what makes PPM serve binaries instead
+# of source tarballs - without it R downloads source and compiles the whole
+# tidyverse/arrow stack, which is slow and unreliable (especially under qemu
+# amd64-on-arm emulation). Binaries mean zero compilation: the full dependency
+# tree installs in ~2 min on any amd64 host, emulated or native.
+# The trailing requireNamespace check hard-fails the build if sparklyr is missing
+# (install.packages() otherwise exits 0 even when a package fails).
+RUN R -e "options(repos=c(CRAN='https://packagemanager.posit.co/cran/__linux__/noble/latest'), HTTPUserAgent=paste0('R/', getRversion(), ' R (', getRversion(), ' ', R.version[['platform']], ' ', R.version[['arch']], ' ', R.version[['os']], ')')); install.packages('sparklyr', dependencies=TRUE); ok <- requireNamespace('sparklyr', quietly=TRUE); quit(status=if (isTRUE(ok)) 0 else 1)"
 
 # -----------------------------
 # Security remediation for base-image CVEs
