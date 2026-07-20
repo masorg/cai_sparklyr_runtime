@@ -38,6 +38,39 @@ RUN set -eux; \
 RUN R -e "install.packages('sparklyr', repos='https://cloud.r-project.org', dependencies=TRUE)"
 
 # -----------------------------
+# Security remediation for base-image CVEs
+# -----------------------------
+# The vulnerability scan flags OS/Python packages inherited from the base image.
+# We cannot edit the base image, so we patch the affected packages to their
+# fixed versions in this derived layer. Run this AFTER installing RStudio so its
+# dependencies are patched too.
+#   postgresql-16 -> CVE-2026-6475 / CVE-2026-6477 (fixed 16.14-0ubuntu0.24.04.1)
+#   mysql-8.0     -> CVE-2026-46862 / CVE-2026-46863 (fixed 8.0.46-0ubuntu0.24.04.3)
+# apt upgrade pulls the current Ubuntu 24.04 security updates for all packages.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Replace git-lfs with the official upstream release, which is built on a patched
+# Go toolchain. The base image ships git-lfs compiled with a vulnerable Go stdlib
+# (CVE-2025-68121, crypto/tls). apt cannot fix this because the Go version is
+# baked into the compiled binary, so we overwrite the binary itself.
+# Confirm the new binary reports go>=1.24.13 (via `go version /usr/bin/git-lfs`
+# on a host with Go) and bump GIT_LFS_VERSION if a newer release is needed.
+ARG GIT_LFS_VERSION=3.7.0
+RUN set -eux; \
+    curl -fL "https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/git-lfs-linux-amd64-v${GIT_LFS_VERSION}.tar.gz" \
+        -o /tmp/git-lfs.tgz; \
+    tar -xzf /tmp/git-lfs.tgz -C /tmp; \
+    install -m0755 "$(find /tmp -name git-lfs -type f | head -n1)" /usr/bin/git-lfs; \
+    rm -rf /tmp/git-lfs*; \
+    git-lfs version
+
+# Patch the Python cryptography package (GHSA-537c-gmf6-5ccf, fixed in >=48.0.1).
+RUN pip3 install --no-cache-dir --upgrade 'cryptography>=48.0.1'
+
+# -----------------------------
 # Configure RStudio for CML
 # -----------------------------
 RUN chown -R cdsw:cdsw /var/lib/rstudio-server && chmod -R 777 /var/lib/rstudio-server
@@ -87,9 +120,9 @@ RUN for i in /bin /var /etc /opt /var/lib/dpkg/ /sbin /usr /home /runtime-addons
 ENV ML_RUNTIME_EDITOR="RStudio" \
     ML_RUNTIME_EDITION="RStudio 2026 Community Runtime" \
     ML_RUNTIME_SHORT_VERSION="2026.03" \
-    ML_RUNTIME_MAINTENANCE_VERSION="3" \
-    ML_RUNTIME_FULL_VERSION="2026.03.3" \
-    ML_RUNTIME_DESCRIPTION="RStudio Server with sparklyr on PBJ Workbench R4.5 runtime" \
+    ML_RUNTIME_MAINTENANCE_VERSION="4" \
+    ML_RUNTIME_FULL_VERSION="2026.03.4" \
+    ML_RUNTIME_DESCRIPTION="RStudio Server with sparklyr on PBJ Workbench R4.5 runtime (CVE remediation)" \
     ML_RUNTIME_KERNEL="R 4.5"
 
 LABEL com.cloudera.ml.runtime.editor=$ML_RUNTIME_EDITOR \
