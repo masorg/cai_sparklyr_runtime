@@ -70,6 +70,22 @@ RUN set -eux; \
 # Patch the Python cryptography package (GHSA-537c-gmf6-5ccf, fixed in >=48.0.1).
 RUN pip3 install --no-cache-dir --upgrade 'cryptography>=48.0.1'
 
+# Replace the esbuild binary bundled inside Quarto (inside RStudio Server). The
+# RStudio .deb ships esbuild compiled with a vulnerable Go stdlib (CVE-2025-68121,
+# crypto/tls; go1.23.12 < 1.24.13). esbuild is a self-contained Go binary, so we
+# overwrite it with the current release (built on a patched Go toolchain) without
+# rebuilding RStudio. The trailing grep prints the new toolchain for build logs.
+ARG ESBUILD_VERSION=0.28.1
+RUN set -eux; \
+    curl -fL "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-${ESBUILD_VERSION}.tgz" \
+        -o /tmp/esbuild.tgz; \
+    tar -xzf /tmp/esbuild.tgz -C /tmp; \
+    find /usr/lib/rstudio-server -type f -path '*/quarto/bin/tools/*/esbuild' \
+        -exec install -m0755 /tmp/package/bin/esbuild {} \; ; \
+    rm -rf /tmp/esbuild.tgz /tmp/package; \
+    grep -aom1 -E 'go1\.[0-9]+(\.[0-9]+)?' \
+        "$(find /usr/lib/rstudio-server -type f -path '*/quarto/bin/tools/*/esbuild' | head -n1)"
+
 # -----------------------------
 # Configure RStudio for CML
 # -----------------------------
