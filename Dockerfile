@@ -6,10 +6,12 @@ USER root
 
 # Install sparklyr without pulling Spark dependencies
 # (sparklyr itself does not install Spark unless explicitly requested via spark_install())
-# install.packages() exits 0 even when a package fails to build, which would let
-# the image ship without sparklyr and only fail at session time. Guard it so the
-# build hard-fails if sparklyr is not importable afterwards.
-RUN R -e "install.packages('sparklyr', repos='https://cloud.r-project.org', dependencies=TRUE); if (!requireNamespace('sparklyr', quietly=TRUE)) quit(status=1)"
+# install.packages() exits 0 even when a package fails to build, so a failed
+# sparklyr install would silently ship an image missing sparklyr that only errors
+# at session time. The trailing requireNamespace check makes the build hard-fail
+# instead. NOTE: build on native amd64 (DevCloud / Secure Container Factory); the
+# tidyverse/sparklyr source compile is unreliable under qemu amd64-on-arm.
+RUN R -e "install.packages('sparklyr', repos='https://cloud.r-project.org', dependencies=TRUE); ok <- requireNamespace('sparklyr', quietly=TRUE); quit(status=if (isTRUE(ok)) 0 else 1)"
 
 # -----------------------------
 # Security remediation for base-image CVEs
