@@ -58,7 +58,7 @@ RUN apt-get update \
 # baked into the compiled binary, so we overwrite the binary itself.
 # Confirm the new binary reports go>=1.24.13 (via `go version /usr/bin/git-lfs`
 # on a host with Go) and bump GIT_LFS_VERSION if a newer release is needed.
-ARG GIT_LFS_VERSION=3.7.0
+ARG GIT_LFS_VERSION=3.7.1
 RUN set -eux; \
     curl -fL "https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/git-lfs-linux-amd64-v${GIT_LFS_VERSION}.tar.gz" \
         -o /tmp/git-lfs.tgz; \

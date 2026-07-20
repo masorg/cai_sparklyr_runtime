@@ -23,7 +23,7 @@ RUN apt-get update \
 # Go toolchain. The base image ships git-lfs compiled with a vulnerable Go stdlib
 # (CVE-2025-68121, crypto/tls); the Go version is baked into the compiled binary,
 # so apt cannot fix it and we overwrite the binary itself.
-ARG GIT_LFS_VERSION=3.7.0
+ARG GIT_LFS_VERSION=3.7.1
 RUN set -eux; \
     curl -fL "https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/git-lfs-linux-amd64-v${GIT_LFS_VERSION}.tar.gz" \
         -o /tmp/git-lfs.tgz; \
