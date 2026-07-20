@@ -1,3 +1,25 @@
+# -----------------------------
+# Stage 1: build git-lfs from source on a patched Go toolchain
+# -----------------------------
+# The newest upstream git-lfs RELEASE (3.7.1) is compiled with go1.25.3, still
+# flagged for CVE-2025-68121 (crypto/tls; fix in the 1.25 branch is go1.25.7).
+# Building from source with a current Go toolchain yields a patched stdlib.
+# Runs on the native BUILD platform (no qemu) and CROSS-compiles to the target
+# arch, avoiding emulation of the Go toolchain (which crashes under qemu
+# amd64-on-arm) while still producing a linux/amd64 binary for the final image.
+ARG GIT_LFS_VERSION=3.7.1
+ARG GO_IMAGE=golang:1.26
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS gitlfs-builder
+ARG GIT_LFS_VERSION
+ARG TARGETOS
+ARG TARGETARCH
+RUN set -eux; \
+    git clone --depth 1 --branch "v${GIT_LFS_VERSION}" https://github.com/git-lfs/git-lfs.git /src; \
+    cd /src; \
+    mkdir -p /out; \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -trimpath -o /out/git-lfs .; \
+    go version /out/git-lfs
+
 # Base Cloudera AI Runtime
 FROM docker.repository.cloudera.com/cloudera/cdsw/ml-runtime-pbj-workbench-r4.5-standard:2026.01.1-b6
 
@@ -26,17 +48,13 @@ RUN apt-get update \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Replace git-lfs with the official upstream release, which is built on a patched
-# Go toolchain. The base image ships git-lfs compiled with a vulnerable Go stdlib
-# (CVE-2025-68121, crypto/tls); the Go version is baked into the compiled binary,
-# so apt cannot fix it and we overwrite the binary itself.
-ARG GIT_LFS_VERSION=3.7.1
+# Overwrite the base image's git-lfs (compiled with a vulnerable Go stdlib,
+# CVE-2025-68121 crypto/tls) with the binary built from source in stage 1 on a
+# patched Go toolchain. The binary is static (CGO disabled), so it has no runtime
+# dependency on the builder image.
+COPY --from=gitlfs-builder /out/git-lfs /usr/bin/git-lfs
 RUN set -eux; \
-    curl -fL "https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/git-lfs-linux-amd64-v${GIT_LFS_VERSION}.tar.gz" \
-        -o /tmp/git-lfs.tgz; \
-    tar -xzf /tmp/git-lfs.tgz -C /tmp; \
-    install -m0755 "$(find /tmp -name git-lfs -type f | head -n1)" /usr/bin/git-lfs; \
-    rm -rf /tmp/git-lfs*; \
+    chmod 0755 /usr/bin/git-lfs; \
     git-lfs version
 
 # Patch the Python cryptography package (GHSA-537c-gmf6-5ccf, fixed in >=48.0.1).
